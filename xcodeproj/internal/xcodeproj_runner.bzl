@@ -6,6 +6,11 @@ load(":collections.bzl", "uniq")
 load(":execution_root.bzl", "write_execution_root_file")
 load(":providers.bzl", "XcodeProjRunnerOutputInfo")
 
+# Null character is used to represent `None`, since `attr.string_dict`
+# requires non-`None` values.
+_NULL_BAZEL_ENV_VALUE = "\0"
+_NULL_BAZEL_ENV_VALUE_LITERAL = "\\0"
+
 def _process_extra_flags(*, attr, content, setting, config, config_suffix):
     extra_flags = getattr(attr, setting)[BuildSettingInfo].value
     if extra_flags:
@@ -272,6 +277,7 @@ def _write_runner(
         execution_root_file,
         extra_flags_bazelrc,
         extra_generator_flags,
+        generator_bazel_env,
         generator_build_file,
         generator_defs_bzl,
         install_path,
@@ -286,8 +292,10 @@ def _write_runner(
     base_envs_values = []
     collect_statements = []
     for key, value in bazel_env.items():
-        if value == "\0":
-            base_def_env_values.append('  \\"{}\\": \\"\\\\0\\",'.format(key))
+        if value == _NULL_BAZEL_ENV_VALUE:
+            base_def_env_values.append(
+                '  \\"{}\\": \\"{}\\",'.format(key, _NULL_BAZEL_ENV_VALUE_LITERAL),
+            )
             collect_statements.append("""\
 if [[ -n "${{{key}:-}}" ]]; then
   envs+=("{key}=${key}")
@@ -312,6 +320,25 @@ fi
                     )
                 ),
             ))
+            base_envs_values.append("  \"{}={}\"".format(
+                key,
+                (
+                    value.replace(
+                        # Escape double quotes for bash
+                        "\"",
+                        "\\\"",
+                    )
+                ),
+            ))
+
+    for key, value in generator_bazel_env.items():
+        if value == _NULL_BAZEL_ENV_VALUE:
+            collect_statements.append("""\
+if [[ -n "${{{key}:-}}" ]]; then
+  envs+=("{key}=${key}")
+fi
+""".format(key = key))
+        else:
             base_envs_values.append("  \"{}={}\"".format(
                 key,
                 (
@@ -439,6 +466,7 @@ def _xcodeproj_runner_impl(ctx):
         extra_generator_flags = (
             ctx.attr._extra_generator_flags[BuildSettingInfo].value
         ),
+        generator_bazel_env = ctx.attr.generator_bazel_env,
         generator_build_file = generator_build_file,
         generator_defs_bzl = generator_defs_bzl,
         install_path = install_path,
@@ -475,6 +503,7 @@ xcodeproj_runner = rule(
         "default_xcode_configuration": attr.string(),
         "focused_labels": attr.string_list(default = []),
         "generation_shard_count": attr.int(mandatory = True),
+        "generator_bazel_env": attr.string_dict(mandatory = True),
         "import_index_build_indexstores": attr.bool(mandatory = True),
         "install_directory": attr.string(mandatory = True),
         "ios_device_cpus": attr.string(mandatory = True),
